@@ -1,0 +1,110 @@
+name: "Build Static PHP"
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        required: true
+        description: Build target OS
+        default: 'linux-x86_64'
+        type: choice
+        options:
+          - 'linux-x86_64'
+          - 'linux-aarch64'
+          - 'macos-x86_64'
+          - 'macos-aarch64'
+      php-version:
+        required: true
+        description: PHP version to compile
+        default: '8.4'
+        type: choice
+        options:
+          - '8.4'
+          - '8.3'
+      debug:
+        description: Show full build logs
+        type: boolean
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  EXTENSIONS: "amqp,apcu,ast,bcmath,brotli,bz2,calendar,ctype,curl,dba,dom,exif,fileinfo,filter,ftp,gd,gmp,gettext,iconv,igbinary,imagick,intl,ldap,lz4,mbregex,mbstring,memcache,memcached,mysqli,mysqlnd,opcache,openssl,password-argon2,parallel,pcntl,pdo,pdo_mysql,pdo_pgsql,pdo_sqlite,pdo_sqlsrv,pgsql,phar,posix,protobuf,readline,redis,session,shmop,simplexml,soap,sockets,sodium,sqlite3,ssh2,sysvmsg,sysvsem,sysvshm,tidy,tokenizer,xlswriter,xml,xmlreader,xmlwriter,xsl,xz,zip,zlib,yaml,zstd"
+  EXTRA_LIBS: "libavif,nghttp2,nghttp3,ngtcp2,watcher"
+
+jobs:
+  build:
+    name: "Build PHP ${{ inputs.php-version }} on ${{ inputs.os }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: "Checkout static-php-cli"
+        uses: actions/checkout@v4
+        with:
+          repository: crazywhalecc/static-php-cli
+
+      - name: "Setup PHP"
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.4
+          tools: pecl, composer
+          extensions: curl, openssl, mbstring
+          ini-values: memory_limit=-1
+        env:
+          phpts: nts
+
+      - name: "Cache downloaded sources"
+        uses: actions/cache@v4
+        with:
+          path: downloads
+          key: php-src-${{ inputs.os }}-${{ inputs.php-version }}
+
+      - name: "Define build commands"
+        id: cmd
+        run: |
+          case "${{ inputs.os }}" in
+            linux-x86_64)
+              DOWN="./bin/spc-alpine-docker download"
+              BUILD="./bin/spc-alpine-docker build"
+              ;;
+            linux-aarch64)
+              DOWN="./bin/spc-alpine-docker download"
+              BUILD="./bin/spc-alpine-docker build"
+              ;;
+            macos-x86_64|macos-aarch64)
+              DOWN="composer update --no-dev --classmap-authoritative && ./bin/spc doctor --auto-fix && ./bin/spc download"
+              BUILD="./bin/spc build"
+              ;;
+          esac
+
+          DEBUG_FLAG=""
+          if [ "${{ inputs.debug }}" == "true" ]; then
+            DEBUG_FLAG="--debug"
+          fi
+
+          echo "download=${DOWN} --with-php=${{ inputs.php-version }} --for-extensions=${EXTENSIONS} --for-libs=${EXTRA_LIBS} --ignore-cache-sources=php-src --prefer-pre-built ${DEBUG_FLAG}" >> "$GITHUB_OUTPUT"
+          echo "build=${BUILD} ${EXTENSIONS} --with-libs=${EXTRA_LIBS} --build-cli --enable-zts ${DEBUG_FLAG}" >> "$GITHUB_OUTPUT"
+
+      - name: "Download sources"
+        run: ${{ steps.cmd.outputs.download }}
+
+      - name: "Build PHP (ZTS)"
+        run: ${{ steps.cmd.outputs.build }}
+
+      - name: "Upload PHP cli"
+        uses: actions/upload-artifact@v4
+        with:
+          name: php-cli-${{ inputs.php-version }}-zts-${{ inputs.os }}
+          path: buildroot/bin/php
+
+      - name: "Upload License Files"
+        uses: actions/upload-artifact@v4
+        with:
+          name: license-files-${{ inputs.php-version }}-${{ inputs.os }}
+          path: buildroot/license/
+
+      - name: "Upload Build Metadata"
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-meta-${{ inputs.php-version }}-${{ inputs.os }}
+          path: |
+            buildroot/build-extensions.json
+            buildroot/build-libraries.json
